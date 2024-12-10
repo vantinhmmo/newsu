@@ -1,155 +1,143 @@
-#!/bin/bash 
+#!/bin/bash
 
-curl -s https://raw.githubusercontent.com/zunxbt/logo/main/logo.sh | bash
-sleep 5
+# Define color codes
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
 
-BOLD=$(tput bold)
-NORMAL=$(tput sgr0)
-PINK='\033[1;35m'
-
-
-show() {
-    case $2 in
-        "error")
-            echo -e "${PINK}${BOLD}❌ $1${NORMAL}"
-            ;;
-        "progress")
-            echo -e "${PINK}${BOLD}⏳ $1${NORMAL}"
-            ;;
-        *)
-            echo -e "${PINK}${BOLD}✅ $1${NORMAL}"
-            ;;
-    esac
+# Error handling function
+handle_error() {
+    echo -e "${RED}Error: $1${NC}"
+    exit 1
 }
 
-SERVICE_NAME="nexus"
-SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
+# Success message function
+success_msg() {
+    echo -e "${GREEN}✓ $1${NC}"
+}
 
-# Install Rust
-show "Installing Rust..." "progress"
-if ! source <(wget -O - https://raw.githubusercontent.com/zunxbt/installation/main/rust.sh); then
-    show "Failed to install Rust." "error"
-    exit 1
+# Info message function
+info_msg() {
+    echo -e "${CYAN}$1${NC}"
+}
+
+# Warning message function
+warning_msg() {
+    echo -e "${YELLOW}$1${NC}"
+}
+
+# Check command execution status
+check_status() {
+    if [ $? -eq 0 ]; then
+        success_msg "$1"
+    else
+        handle_error "$2"
+    fi
+}
+
+# Check if script is run as root
+if [[ $EUID -ne 0 ]]; then
+    handle_error "This script must be run as root. Please use sudo ./install_nexus.sh"
 fi
 
-# Update package list
-show "Updating package list..." "progress"
-if ! sudo apt update; then
-    show "Failed to update package list." "error"
-    exit 1
+# Check if toilet is installed
+if ! command -v toilet &> /dev/null; then
+    echo -e "${YELLOW}toilet is not installed. Installing now...${NC}"
+    sudo apt update && sudo apt install -y toilet
+    check_status "toilet installed successfully" "Failed to install toilet"
 fi
 
-# Install Git if not installed
-if ! command -v git &> /dev/null; then
-    show "Git is not installed. Installing git..." "progress"
-    if ! sudo apt install git -y; then
-        show "Failed to install git." "error"
-        exit 1
+# Display logo with enhanced visuals using toilet
+toilet -f future "WibuCrypto" --gay
+echo
+echo "Welcome to WibuCrypto Validator Setup!"
+echo
+
+# Create the .nexus directory if it doesn't exist
+info_msg "Ensuring ~/.nexus directory exists..."
+mkdir -p ~/.nexus
+check_status "Directory ~/.nexus created or already exists" "Failed to create ~/.nexus directory"
+
+# Update system packages
+info_msg "Updating system packages..."
+sudo apt update && sudo apt upgrade -y
+check_status "System packages updated successfully" "Failed to update system packages"
+
+# Install required packages
+declare -a packages=("protobuf-compiler" "libssl-dev" "pkg-config" "openssl" "build-essential")
+
+for package in "${packages[@]}"; do
+    if ! dpkg -l | grep -q "^ii  $package"; then
+        info_msg "Installing $package..."
+        sudo apt install -y "$package"
+        check_status "$package installed successfully" "Failed to install $package"
+    else
+        success_msg "$package is already installed"
+    fi
+done
+
+# Install Rust and Cargo with comprehensive checks
+info_msg "Checking Rust and Cargo installation..."
+if ! command -v cargo &> /dev/null; then
+    warning_msg "Cargo not found. Installing Rust and Cargo..."
+    # Check for build-essential again before Rust installation
+    if ! dpkg -l | grep -q "^ii  build-essential"; then
+        info_msg "Installing build-essential..."
+        sudo apt install -y build-essential
+        check_status "build-essential installed successfully" "Failed to install build-essential"
+    fi
+
+    # Rust installation with non-interactive mode and default options
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    
+    # Source Rust environment
+    source $HOME/.cargo/env
+    
+    # Verify Rust installation
+    if command -v cargo &> /dev/null; then
+        success_msg "Rust and Cargo installed successfully"
+    else
+        handle_error "Failed to install Rust and Cargo"
     fi
 else
-    show "Git is already installed."
+    success_msg "Cargo is already installed"
 fi
 
-# Clone Nexus-XYZ repository
-if [ -d "$HOME/network-api" ]; then
-    show "Deleting existing repository..." "progress"
-    rm -rf "$HOME/network-api"
-fi
+# Prover ID setup with validation
+while true; do
+    echo -e "${BLUE}Please enter your Prover ID:${NC} "
+    read -r PROVER_ID
+    
+    # Basic validation - check if input is not empty and contains only alphanumeric characters
+    if [[ -z "$PROVER_ID" ]]; then
+        warning_msg "Prover ID cannot be empty. Please try again."
+        continue
+    elif ! [[ "$PROVER_ID" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        warning_msg "Prover ID contains invalid characters. Please use only letters, numbers, underscores, and hyphens."
+        continue
+    fi
+    
+    # Write the Prover ID to the ~/.nexus directory
+    echo "$PROVER_ID" > ~/.nexus/prover-id
+    check_status "Prover ID saved successfully" "Failed to save Prover ID"
+    break
+done
 
-sleep 3
+# Install Nexus CLI
+info_msg "Installing Nexus CLI..."
+curl -sSf https://cli.nexus.xyz/ | sh
+check_status "Nexus CLI installed successfully" "Failed to install Nexus CLI"
 
-show "Cloning Nexus-XYZ network API repository..." "progress"
-if ! git clone https://github.com/nexus-xyz/network-api.git "$HOME/network-api"; then
-    show "Failed to clone the repository." "error"
-    exit 1
-fi
+echo -e "\n${PURPLE}=================================${NC}"
+success_msg "Installation completed successfully!"
+echo -e "${PURPLE}=================================${NC}"
 
-cd $HOME/network-api/clients/cli
-
-# Install required dependencies including protoc
-show "Installing required dependencies..." "progress"
-sudo apt update && sudo apt upgrade && sudo apt install build-essential pkg-config libssl-dev protobuf-compiler -y
-
-# Install specific version of protoc (3.19.0)
-show "Installing protoc version 3.19.0..." "progress"
-PROTOC_VERSION="3.19.0"
-PROTOC_URL="https://github.com/protocolbuffers/protobuf/releases/download/v$PROTOC_VERSION/protoc-$PROTOC_VERSION-linux-x86_64.zip"
-PROTOC_DIR="$HOME/protoc-$PROTOC_VERSION"
-
-# Download and extract protoc
-if ! wget "$PROTOC_URL" -O "$PROTOC_DIR.zip"; then
-    show "Failed to download protoc." "error"
-    exit 1
-fi
-
-if ! unzip "$PROTOC_DIR.zip" -d "$PROTOC_DIR"; then
-    show "Failed to unzip protoc." "error"
-    exit 1
-fi
-
-# Move protoc binaries to /usr/local/bin
-sudo mv "$PROTOC_DIR/bin/protoc" /usr/local/bin/
-sudo mv "$PROTOC_DIR/include" /usr/local/include/
-
-# Clean up
-rm -rf "$PROTOC_DIR.zip" "$PROTOC_DIR"
-
-# Verify protoc installation
-if ! command -v protoc &> /dev/null; then
-    show "protoc installation failed." "error"
-    exit 1
-else
-    show "protoc version 3.19.0 installed successfully." "progress"
-fi
-
-# Handle nexus.service
-if systemctl is-active --quiet nexus.service; then
-    show "nexus.service is currently running. Stopping and disabling it..."
-    sudo systemctl stop nexus.service
-    sudo systemctl disable nexus.service
-else
-    show "nexus.service is not running."
-fi
-
-# Create systemd service
-show "Creating systemd service..." "progress"
-if ! sudo bash -c "cat > $SERVICE_FILE <<EOF
-[Unit]
-Description=Nexus XYZ Prover Service
-After=network.target
-
-[Service]
-User=$USER
-WorkingDirectory=$HOME/network-api/clients/cli
-Environment=NONINTERACTIVE=1
-ExecStart=$HOME/.cargo/bin/cargo run --release --bin prover -- beta.orchestrator.nexus.xyz
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF"; then
-    show "Failed to create the systemd service file." "error"
-    exit 1
-fi
-
-# Reload systemd and start service
-show "Reloading systemd and starting the service..." "progress"
-if ! sudo systemctl daemon-reload; then
-    show "Failed to reload systemd." "error"
-    exit 1
-fi
-
-if ! sudo systemctl start $SERVICE_NAME.service; then
-    show "Failed to start the service." "error"
-    exit 1
-fi
-
-if ! sudo systemctl enable $SERVICE_NAME.service; then
-    show "Failed to enable the service." "error"
-    exit 1
-fi
-
-# Final message
-show "Nexus Prover installation and service setup complete!"
-show "You can check Nexus Prover logs using this command : journalctl -u nexus.service -fn 50"
+# Display next steps
+echo -e "\n${CYAN}Next steps:${NC}"
+echo -e "1. Run ${GREEN}'source ~/.bashrc'${NC} to update your environment"
+echo -e "2. Verify installation with ${GREEN}'nexus --version'${NC}"
+echo -e "3. Configure your settings using ${GREEN}'nexus config'${NC}\n"
